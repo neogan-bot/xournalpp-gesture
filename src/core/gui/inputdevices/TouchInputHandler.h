@@ -12,6 +12,7 @@
 #pragma once
 
 #include <set>
+#include <vector>
 
 #include <gdk/gdk.h>  // for GdkEventSequence
 
@@ -25,10 +26,10 @@ struct InputEvent;
 class TouchInputHandler: public AbstractInputHandler {
 private:
     bool zooming = false;
+    bool moving = false;
+    
     std::set<GdkEventSequence*> invalidActive;
-
-    GdkEventSequence* primarySequence{};
-    GdkEventSequence* secondarySequence{};
+    std::vector<GdkEventSequence*> validActive;
 
     double startZoomDistance = 0.0;
     xoj::util::Point<double> lastZoomScrollCenter{};
@@ -51,6 +52,8 @@ private:
     void zoomMotion(InputEvent const& event);
     void zoomEnd();
 
+    void invalidateAllValid();
+    bool removeValidEvent(GdkEventSequence* event);
 public:
     explicit TouchInputHandler(InputContext* inputContext);
     ~TouchInputHandler() override = default;

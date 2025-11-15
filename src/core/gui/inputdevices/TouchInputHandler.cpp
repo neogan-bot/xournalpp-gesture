@@ -32,23 +32,14 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
             g_warning("Missed touch end/cancel event. Resetting touch input handler.");
             invalidActive.clear();
         }
-        if (invalidActive.empty() && event.sequence != primarySequence && event.sequence != secondarySequence) {
+        if (invalidActive.empty()) {
             // All touches are previously valid and we did not miss an end/cancel event for the current touch
-            if (primarySequence && secondarySequence) {
-                // All touches become invalid
-                g_debug("All touches become invalid");
-                invalidActive.insert({primarySequence, secondarySequence, event.sequence});
-                primarySequence = secondarySequence = nullptr;
-            } else {
-                if (primarySequence) {
-                    secondarySequence = event.sequence;
-                } else {
-                    primarySequence = event.sequence;
-                }
-                sequenceStart(event);
-                if (secondarySequence) {
-                    startZoomReady = true;
-                }
+
+            validActive.push_back(event.sequence);
+
+            sequenceStart(event);
+            if (validActive.size() == 2) {
+                startZoomReady = true;
             }
         } else {
             invalidActive.insert(event.sequence);
@@ -58,43 +49,74 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
     }
 
     if (event.type == MOTION_EVENT) {
-        if (primarySequence == event.sequence && !secondarySequence) {
-            scrollMotion(event);
-            return true;
-        } else if (event.sequence && (primarySequence == event.sequence || secondarySequence == event.sequence)) {
-            xoj_assert(primarySequence);
-            if (zoomGesturesEnabled) {
-                if (startZoomReady) {
-                    if (this->primarySequence == event.sequence) {
-                        sequenceStart(event);
-                        zoomStart();
-                    }
-                } else {
-                    zoomMotion(event);
-                }
-            } else {
+        switch (validActive.size()) {
+            case 1:
                 scrollMotion(event);
-            }
-            return true;
+                return true;
+            case 2:
+                if (event.sequence && (validActive[0] == event.sequence || validActive[1] == event.sequence)) {
+                    xoj_assert(validActive[0]);
+                    if (zoomGesturesEnabled) {
+                        if (startZoomReady) {
+                            if (validActive[0] == event.sequence) {
+                                sequenceStart(event);
+                                zoomStart();
+                            }
+                        } else {
+                            zoomMotion(event);
+                        }
+                    } else {
+                        scrollMotion(event);
+                    }
+                }
+                return true;
+            default:
+                return true;
         }
     }
 
     if (event.type == BUTTON_RELEASE_EVENT) {
-        if (zooming && primarySequence && secondarySequence &&
-            (event.sequence == primarySequence || event.sequence == secondarySequence)) {
-            zoomEnd();
+        switch (validActive.size()) {
+            case 2:
+                // proceed only if the event belongs to the fingers that summoned it
+                if (validActive[0] == event.sequence || validActive[1] == event.sequence) {
+                    if(zooming) {
+                        zoomEnd();
+                    } 
+                    else {
+                        // no motion events were sent, perform gesture
+                        this->inputContext->getView()->getControl()->getUndoRedoHandler()->undo();
+
+                        // invalidate all points, we don't want to come back to zoomin
+                        invalidateAllValid();
+                    } 
+                }
+                break;
+            
+            case 3:
+                // checks if the zooming gesture was triggered, should check for motion on all fingers as well
+                // but that requires picking an approach and idk which one would be the best rn
+                if(!zooming) {
+                    // run action
+                    this->inputContext->getView()->getControl()->getUndoRedoHandler()->redo();
+
+                    // invalidate all points, we don't want to come back to zoomin
+                    invalidateAllValid();
+                }
+                
+                break;
+            case 4:
+                if(!zooming) {
+                    // run action, for example floating toolbox
+                    this->inputContext->getView()->getControl()->showFloatingToolbox(event.absolute.x, event.absolute.y);
+                    
+                    // invalidate all points, we don't want to come back to zoomin
+                    invalidateAllValid();
+                }
+                break;
         }
 
-        if (event.sequence == primarySequence) {
-            // If secondarySequence is nullptr, this sets primarySequence
-            // to nullptr. If it isn't, then it is now the primary sequence!
-            primarySequence = std::exchange(secondarySequence, nullptr);
-
-            this->priLastAbs = this->secLastAbs;
-            this->priLastRel = this->secLastRel;
-        } else if (event.sequence == secondarySequence) {
-            secondarySequence = nullptr;
-        } else {
+        if (!removeValidEvent(event.sequence)){
             invalidActive.erase(event.sequence);
             g_debug("Removing sequence from invalid list, %zu inputs remain invalid.", invalidActive.size());
         }
@@ -104,8 +126,27 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
     return false;
 }
 
+void TouchInputHandler::invalidateAllValid() {
+    for (auto value : validActive) {
+        invalidActive.insert(value);
+    }
+
+    validActive.clear();
+}
+
+bool TouchInputHandler::removeValidEvent(GdkEventSequence* event) {
+    for (auto iter = validActive.begin();iter<validActive.end();iter++) {
+        if (event == *iter) {
+            validActive.erase(iter);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void TouchInputHandler::sequenceStart(InputEvent const& event) {
-    if (event.sequence == this->primarySequence) {
+    if (validActive[0] == event.sequence) {
         this->priLastAbs = event.absolute;
         this->priLastRel = event.relative;
     } else {
@@ -117,7 +158,7 @@ void TouchInputHandler::sequenceStart(InputEvent const& event) {
 void TouchInputHandler::scrollMotion(InputEvent const& event) {
     // Will only be called if there is a single sequence (zooming handles two sequences)
     auto offset = [&]() {
-        if (event.sequence == this->primarySequence) {
+        if (event.sequence == validActive[0]) {
             auto offset = event.absolute - this->priLastAbs;
             this->priLastAbs = event.absolute;
             return offset;
@@ -167,7 +208,7 @@ void TouchInputHandler::zoomStart() {
 }
 
 void TouchInputHandler::zoomMotion(InputEvent const& event) {
-    if (event.sequence == this->primarySequence) {
+    if (event.sequence == validActive[0]) {
         this->priLastAbs = event.absolute;
     } else {
         this->secLastAbs = event.absolute;
@@ -207,9 +248,8 @@ void TouchInputHandler::onBlock() {
 }
 
 void TouchInputHandler::onUnblock() {
+    this->validActive.clear();
     this->invalidActive.clear();
-    this->primarySequence = nullptr;
-    this->secondarySequence = nullptr;
 
     this->startZoomDistance = 0.0;
     this->lastZoomScrollCenter = {};
