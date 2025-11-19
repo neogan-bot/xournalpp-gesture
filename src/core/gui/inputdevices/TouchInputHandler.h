@@ -23,13 +23,24 @@
 class InputContext;
 struct InputEvent;
 
+class ActiveEvent {
+    public:
+    GdkEventSequence* sequence{};
+    xoj::util::Point<double> lastPos;
+    xoj::util::Point<double> distMoved{0,0};
+
+    ActiveEvent(InputEvent const& event);
+
+    void moved(InputEvent const& event);
+};
+
 class TouchInputHandler: public AbstractInputHandler {
 private:
     bool zooming = false;
     bool moving = false;
     
     std::set<GdkEventSequence*> invalidActive;
-    std::vector<GdkEventSequence*> validActive;
+    std::vector<ActiveEvent> validActive;
 
     double startZoomDistance = 0.0;
     xoj::util::Point<double> lastZoomScrollCenter{};
@@ -53,7 +64,10 @@ private:
     void zoomEnd();
 
     void invalidateAllValid();
+    std::vector<ActiveEvent>::iterator findEvent(GdkEventSequence* sequence);
     bool removeValidEvent(GdkEventSequence* event);
+    bool tapGestureValid();
+    const xoj::util::Point<double> center{0,0};
 public:
     explicit TouchInputHandler(InputContext* inputContext);
     ~TouchInputHandler() override = default;

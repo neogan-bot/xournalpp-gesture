@@ -35,7 +35,7 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
         if (invalidActive.empty()) {
             // All touches are previously valid and we did not miss an end/cancel event for the current touch
 
-            validActive.push_back(event.sequence);
+            validActive.push_back(ActiveEvent(event));
 
             sequenceStart(event);
             if (validActive.size() == 2) {
@@ -49,16 +49,21 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
     }
 
     if (event.type == MOTION_EVENT) {
+        if(validActive.size() > 1) {
+            auto ev = TouchInputHandler::findEvent(event.sequence);
+            ev->moved(event);
+        }
+        
         switch (validActive.size()) {
             case 1:
                 scrollMotion(event);
                 return true;
             case 2:
-                if (event.sequence && (validActive[0] == event.sequence || validActive[1] == event.sequence)) {
-                    xoj_assert(validActive[0]);
+                if (event.sequence && (validActive[0].sequence == event.sequence || validActive[1].sequence == event.sequence)) {
+                    xoj_assert(validActive[0].sequence);
                     if (zoomGesturesEnabled) {
                         if (startZoomReady) {
-                            if (validActive[0] == event.sequence) {
+                            if (validActive[0].sequence == event.sequence) {
                                 sequenceStart(event);
                                 zoomStart();
                             }
@@ -77,13 +82,15 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
 
     if (event.type == BUTTON_RELEASE_EVENT) {
         switch (validActive.size()) {
+            case 1:
+                break;
             case 2:
                 // proceed only if the event belongs to the fingers that summoned it
-                if (validActive[0] == event.sequence || validActive[1] == event.sequence) {
+                if (validActive[0].sequence == event.sequence || validActive[1].sequence == event.sequence) {
                     if(zooming) {
                         zoomEnd();
                     } 
-                    else {
+                    else if (tapGestureValid()) {
                         // no motion events were sent, perform gesture
                         this->inputContext->getView()->getControl()->getUndoRedoHandler()->undo();
 
@@ -94,25 +101,22 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
                 break;
             
             case 3:
-                // checks if the zooming gesture was triggered, should check for motion on all fingers as well
-                // but that requires picking an approach and idk which one would be the best rn
-                if(!zooming) {
+                if(tapGestureValid()) {
                     // run action
                     this->inputContext->getView()->getControl()->getUndoRedoHandler()->redo();
-
-                    // invalidate all points, we don't want to come back to zoomin
-                    invalidateAllValid();
                 }
-                
+                // default behaviour invalidates all touches regardless when >2 fingers show up
+                invalidateAllValid();
                 break;
             case 4:
-                if(!zooming) {
+                if(tapGestureValid()) {
                     // run action, for example floating toolbox
                     this->inputContext->getView()->getControl()->showFloatingToolbox(event.absolute.x, event.absolute.y);
-                    
-                    // invalidate all points, we don't want to come back to zoomin
-                    invalidateAllValid();
                 }
+                invalidateAllValid();
+                break;
+            default:
+                invalidateAllValid();
                 break;
         }
 
@@ -128,15 +132,15 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
 
 void TouchInputHandler::invalidateAllValid() {
     for (auto value : validActive) {
-        invalidActive.insert(value);
+        invalidActive.insert(value.sequence);
     }
 
     validActive.clear();
 }
 
-bool TouchInputHandler::removeValidEvent(GdkEventSequence* event) {
+bool TouchInputHandler::removeValidEvent(GdkEventSequence* sequence) {
     for (auto iter = validActive.begin();iter<validActive.end();iter++) {
-        if (event == *iter) {
+        if (sequence == iter->sequence) {
             validActive.erase(iter);
             return true;
         }
@@ -145,8 +149,32 @@ bool TouchInputHandler::removeValidEvent(GdkEventSequence* event) {
     return false;
 }
 
+// check if fingers moved during the gestore
+// true if they didn't move far enough (5px rn)
+bool TouchInputHandler::tapGestureValid() {
+    for (auto iter = validActive.begin();iter<validActive.end();iter++) {
+        if (abs(center.distance(iter->distMoved)) > 5) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// find ActiveEvent in ActiveEvents by the sequence
+std::vector<ActiveEvent>::iterator TouchInputHandler::findEvent(GdkEventSequence* sequence) {
+    // maybe use a different structure or maybe thre's an assumption I can make to get rid of a search?
+    // buuuutt it's 5 el max...
+    for (auto iter = validActive.begin();iter<validActive.end();iter++) {
+        if (sequence == iter->sequence) {
+            return iter;
+        }
+    }
+
+    return validActive.end();
+}
+
 void TouchInputHandler::sequenceStart(InputEvent const& event) {
-    if (validActive[0] == event.sequence) {
+    if (validActive[0].sequence == event.sequence) {
         this->priLastAbs = event.absolute;
         this->priLastRel = event.relative;
     } else {
@@ -158,7 +186,7 @@ void TouchInputHandler::sequenceStart(InputEvent const& event) {
 void TouchInputHandler::scrollMotion(InputEvent const& event) {
     // Will only be called if there is a single sequence (zooming handles two sequences)
     auto offset = [&]() {
-        if (event.sequence == validActive[0]) {
+        if (event.sequence == validActive[0].sequence) {
             auto offset = event.absolute - this->priLastAbs;
             this->priLastAbs = event.absolute;
             return offset;
@@ -208,7 +236,7 @@ void TouchInputHandler::zoomStart() {
 }
 
 void TouchInputHandler::zoomMotion(InputEvent const& event) {
-    if (event.sequence == validActive[0]) {
+    if (event.sequence == validActive[0].sequence) {
         this->priLastAbs = event.absolute;
     } else {
         this->secLastAbs = event.absolute;
@@ -258,4 +286,14 @@ void TouchInputHandler::onUnblock() {
     secLastAbs = {-1.0, -1.0};
     priLastRel = {-1.0, -1.0};
     secLastRel = {-1.0, -1.0};
+}
+
+ActiveEvent::ActiveEvent(InputEvent const& event) {
+    sequence = event.sequence;
+    lastPos = event.absolute;
+}
+
+void ActiveEvent::moved(InputEvent const& event){
+    xoj_assert(sequence == event.sequence);
+    distMoved = event.absolute - lastPos;
 }
