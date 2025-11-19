@@ -49,10 +49,9 @@ auto TouchInputHandler::handleImpl(InputEvent const& event) -> bool {
     }
 
     if (event.type == MOTION_EVENT) {
-        if(validActive.size() > 1) {
-            auto ev = TouchInputHandler::findEvent(event.sequence);
+        auto ev = TouchInputHandler::findEvent(event.sequence);
+        if(ev != validActive.end())
             ev->moved(event);
-        }
         
         switch (validActive.size()) {
             case 1:
